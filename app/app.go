@@ -582,11 +582,6 @@ func New(
 	)
 	app.TokenFactoryKeeper = &tokenFactoryKeeper
 
-	app.BankKeeper.BaseSendKeeper = *app.BankKeeper.BaseSendKeeper.SetHooks(
-		banktypes.NewMultiBankHooks(
-			app.TokenFactoryKeeper.Hooks(),
-		))
-
 	app.BuilderKeeper = builderkeeper.NewKeeperWithRewardsAddressProvider(
 		appCodec,
 		keys[buildertypes.StoreKey],
