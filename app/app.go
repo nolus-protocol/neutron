@@ -155,6 +155,24 @@ import (
 	"github.com/cosmos/ibc-apps/middleware/packet-forward-middleware/v7/router"
 	routerkeeper "github.com/cosmos/ibc-apps/middleware/packet-forward-middleware/v7/router/keeper"
 	routertypes "github.com/cosmos/ibc-apps/middleware/packet-forward-middleware/v7/router/types"
+
+	"github.com/neutron-org/neutron/x/dex"
+	dexkeeper "github.com/neutron-org/neutron/x/dex/keeper"
+	dextypes "github.com/neutron-org/neutron/x/dex/types"
+
+	"github.com/neutron-org/neutron/x/incentives"
+	incentiveskeeper "github.com/neutron-org/neutron/x/incentives/keeper"
+	incentivestypes "github.com/neutron-org/neutron/x/incentives/types"
+
+	"github.com/neutron-org/neutron/x/epochs"
+	epochskeeper "github.com/neutron-org/neutron/x/epochs/keeper"
+	epochstypes "github.com/neutron-org/neutron/x/epochs/types"
+
+	"github.com/neutron-org/neutron/x/ibcswap"
+	ibcswapkeeper "github.com/neutron-org/neutron/x/ibcswap/keeper"
+	ibcswaptypes "github.com/neutron-org/neutron/x/ibcswap/types"
+
+	gmpmiddleware "github.com/neutron-org/neutron/x/gmp"
 )
 
 const (
@@ -211,6 +229,10 @@ var (
 		router.AppModuleBasic{},
 		builder.AppModuleBasic{},
 		globalfee.AppModule{},
+		dex.AppModuleBasic{},
+		ibcswap.AppModuleBasic{},
+		epochs.AppModuleBasic{},
+		incentives.AppModuleBasic{},
 	)
 
 	// module account permissions
@@ -227,6 +249,8 @@ var (
 		ccvconsumertypes.ConsumerToSendToProviderName: nil,
 		tokenfactorytypes.ModuleName:                  {authtypes.Minter, authtypes.Burner},
 		crontypes.ModuleName:                          nil,
+		dextypes.ModuleName:                           {authtypes.Minter, authtypes.Burner, authtypes.Staking},
+		incentivestypes.ModuleName:                    nil,
 	}
 )
 
@@ -234,6 +258,8 @@ var (
 	_ runtime.AppI            = (*App)(nil)
 	_ servertypes.Application = (*App)(nil)
 	_ ibctesting.TestingApp   = (*App)(nil)
+	// TODO JCP NEED THSI?
+	// _ testutil.ConsumerApp    = (*App)(nil)
 )
 
 func init() {
@@ -290,6 +316,10 @@ type App struct {
 	TokenFactoryKeeper  *tokenfactorykeeper.Keeper
 	CronKeeper          cronkeeper.Keeper
 	RouterKeeper        *routerkeeper.Keeper
+	DexKeeper           dexkeeper.Keeper
+	SwapKeeper          ibcswapkeeper.Keeper
+	IncentivesKeeper    *incentiveskeeper.Keeper
+	EpochsKeeper        *epochskeeper.Keeper
 
 	RouterModule router.AppModule
 
@@ -374,7 +404,7 @@ func New(
 		icahosttypes.StoreKey, capabilitytypes.StoreKey,
 		interchainqueriesmoduletypes.StoreKey, contractmanagermoduletypes.StoreKey, interchaintxstypes.StoreKey, wasmtypes.StoreKey, feetypes.StoreKey,
 		feeburnertypes.StoreKey, adminmoduletypes.StoreKey, ccvconsumertypes.StoreKey, tokenfactorytypes.StoreKey, routertypes.StoreKey,
-		crontypes.StoreKey, ibchookstypes.StoreKey, consensusparamtypes.StoreKey, crisistypes.StoreKey, buildertypes.StoreKey,
+		crontypes.StoreKey, ibchookstypes.StoreKey, consensusparamtypes.StoreKey, crisistypes.StoreKey, buildertypes.StoreKey, dextypes.StoreKey, incentivestypes.StoreKey, epochstypes.StoreKey,
 	)
 	tkeys := sdk.NewTransientStoreKeys(paramstypes.TStoreKey)
 	memKeys := sdk.NewMemoryStoreKeys(capabilitytypes.MemStoreKey, feetypes.MemStoreKey)
@@ -592,6 +622,59 @@ func New(
 		authtypes.NewModuleAddress(adminmoduletypes.ModuleName).String(),
 	)
 
+	app.DexKeeper = *dexkeeper.NewKeeper(
+		appCodec,
+		keys[dextypes.StoreKey],
+		keys[dextypes.MemStoreKey],
+		app.GetSubspace(dextypes.ModuleName),
+		app.BankKeeper,
+	)
+
+	dexModule := dex.NewAppModule(appCodec, app.DexKeeper, app.BankKeeper)
+
+	app.SwapKeeper = ibcswapkeeper.NewKeeper(
+		appCodec,
+		app.MsgServiceRouter(),
+		app.IBCKeeper.ChannelKeeper,
+		app.BankKeeper,
+	)
+
+	swapModule := ibcswap.NewAppModule(app.SwapKeeper)
+
+	app.EpochsKeeper = epochskeeper.NewKeeper(keys[epochstypes.StoreKey])
+
+	app.IncentivesKeeper = incentiveskeeper.NewKeeper(
+		keys[incentivestypes.StoreKey],
+		app.GetSubspace(incentivestypes.ModuleName),
+		app.AccountKeeper,
+		app.BankKeeper,
+		app.EpochsKeeper,
+		app.DexKeeper,
+		// JCP TODO: confirm this is correct
+		authtypes.NewModuleAddress(adminmoduletypes.ModuleName).String(),
+	)
+
+	app.IncentivesKeeper.SetHooks(
+		incentivestypes.NewMultiIncentiveHooks(
+		// insert Incentives hooks receivers here
+		),
+	)
+
+	incentivesModule := incentives.NewAppModule(
+		app.IncentivesKeeper,
+		app.AccountKeeper,
+		app.BankKeeper,
+		app.EpochsKeeper,
+	)
+
+	app.EpochsKeeper.SetHooks(epochstypes.NewMultiEpochHooks(
+		app.IncentivesKeeper.Hooks(),
+	))
+
+	// NB: This must be initialized AFTER app.EpochsKeeper.SetHooks() because otherwise
+	// we dereference an out-of-date EpochsKeeper.
+	epochsModule := epochs.NewAppModule(*app.EpochsKeeper)
+
 	wasmDir := filepath.Join(homePath, "wasm")
 	wasmConfig, err := wasm.ReadWasmConfig(appOpts)
 	if err != nil {
@@ -706,13 +789,16 @@ func New(
 
 	app.RouterModule = router.NewAppModule(app.RouterKeeper)
 
-	ibcStack := router.NewIBCMiddleware(
+	var ibcStack ibcporttypes.IBCModule = router.NewIBCMiddleware(
 		app.HooksTransferIBCModule,
 		app.RouterKeeper,
 		0,
 		routerkeeper.DefaultForwardTransferPacketTimeoutTimestamp,
 		routerkeeper.DefaultRefundTransferPacketTimeoutTimestamp,
 	)
+
+	ibcStack = ibcswap.NewIBCMiddleware(ibcStack, app.SwapKeeper)
+	ibcStack = gmpmiddleware.NewIBCMiddleware(ibcStack)
 
 	ibcRouter.AddRoute(icacontrollertypes.SubModuleName, icaControllerStack).
 		AddRoute(icahosttypes.SubModuleName, icaHostIBCModule).
@@ -761,6 +847,10 @@ func New(
 		cronModule,
 		globalfee.NewAppModule(app.GetSubspace(globalfee.ModuleName)),
 		builder.NewAppModule(appCodec, app.BuilderKeeper),
+		swapModule,
+		dexModule,
+		incentivesModule,
+		epochsModule,
 		crisis.NewAppModule(&app.CrisisKeeper, skipGenesisInvariants, app.GetSubspace(crisistypes.ModuleName)), // always be last to make sure that it checks for all invariants and not only part of them
 	)
 
@@ -797,6 +887,10 @@ func New(
 		routertypes.ModuleName,
 		crontypes.ModuleName,
 		globalfee.ModuleName,
+		ibcswaptypes.ModuleName,
+		dextypes.ModuleName,
+		incentivestypes.ModuleName,
+		epochstypes.ModuleName,
 	)
 
 	app.mm.SetOrderEndBlockers(
@@ -828,6 +922,12 @@ func New(
 		routertypes.ModuleName,
 		crontypes.ModuleName,
 		globalfee.ModuleName,
+		ibcswaptypes.ModuleName,
+		incentivestypes.ModuleName,
+		epochstypes.ModuleName,
+		// NOTE: Because of the gas sensitivity of PurgeExpiredLimit order operations
+		// dexmodule must be the last endBlock module to run
+		dextypes.ModuleName,
 	)
 
 	// NOTE: The genutils module must occur after staking so that pools are
@@ -864,6 +964,10 @@ func New(
 		routertypes.ModuleName,
 		crontypes.ModuleName,
 		globalfee.ModuleName,
+		ibcswaptypes.ModuleName,
+		dextypes.ModuleName,
+		incentivestypes.ModuleName,
+		epochstypes.ModuleName,
 	)
 
 	app.mm.RegisterInvariants(&app.CrisisKeeper)
@@ -892,6 +996,7 @@ func New(
 		interchainTxsModule,
 		feeBurnerModule,
 		cronModule,
+		dexModule,
 	)
 	app.sm.RegisterStoreDecoders()
 
@@ -1057,12 +1162,22 @@ func (app *App) EndBlocker(ctx sdk.Context, req abci.RequestEndBlock) abci.Respo
 	return app.mm.EndBlock(ctx, req)
 }
 
+func (app *App) EnsureBlockGasMeter(ctx sdk.Context) {
+	// TrancheKey generation and LimitOrderExpirationPurge both rely on a BlockGas meter.
+	// check that it works at startup
+	cp := app.GetConsensusParams(ctx)
+	if cp == nil || cp.Block == nil || cp.Block.MaxGas <= 0 {
+		panic("BlockGas meter must be initialized. Genesis must provide value for Block.MaxGas")
+	}
+}
+
 // InitChainer application update at chain initialization
 func (app *App) InitChainer(ctx sdk.Context, req abci.RequestInitChain) abci.ResponseInitChain {
 	var genesisState GenesisState
 	if err := tmjson.Unmarshal(req.AppStateBytes, &genesisState); err != nil {
 		panic(err)
 	}
+	app.EnsureBlockGasMeter(ctx)
 	app.UpgradeKeeper.SetModuleVersionMap(ctx, app.mm.GetVersionMap())
 	return app.mm.InitGenesis(ctx, app.appCodec, genesisState)
 }
@@ -1194,6 +1309,9 @@ func initParamsKeeper(appCodec codec.BinaryCodec, legacyAmino *codec.LegacyAmino
 	paramsKeeper.Subspace(tokenfactorytypes.StoreKey).WithKeyTable(tokenfactorytypes.ParamKeyTable())
 	paramsKeeper.Subspace(interchainqueriesmoduletypes.StoreKey).WithKeyTable(interchainqueriesmoduletypes.ParamKeyTable())
 	paramsKeeper.Subspace(interchaintxstypes.StoreKey).WithKeyTable(interchaintxstypes.ParamKeyTable())
+	paramsKeeper.Subspace(dextypes.ModuleName)
+	paramsKeeper.Subspace(epochstypes.ModuleName)
+	paramsKeeper.Subspace(incentivestypes.ModuleName)
 
 	return paramsKeeper
 }
