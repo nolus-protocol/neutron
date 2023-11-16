@@ -164,7 +164,7 @@ func handleDexMsg[T sdk.Msg, R any](ctx sdk.Context, msg T, handler func(ctx con
 
 	resp, err := handler(ctx, msg)
 	if err != nil {
-		ctx.Logger().Debug(fmt.Sprintf("%T: failed to execute", handler),
+		ctx.Logger().Debug(fmt.Sprintf("%T: failed to execute", msg),
 			"from_address", msg.GetSigners()[0].String(),
 			"msg", msg,
 			"error", err,
@@ -182,7 +182,7 @@ func handleDexMsg[T sdk.Msg, R any](ctx sdk.Context, msg T, handler func(ctx con
 		return nil, errors.Wrap(err, "marshal json failed")
 	}
 
-	ctx.Logger().Debug(fmt.Sprintf("%T completed", handler),
+	ctx.Logger().Debug(fmt.Sprintf("%T execution completed", handler),
 		"from_address", msg.GetSigners()[0].String(),
 		"msg", msg,
 	)
