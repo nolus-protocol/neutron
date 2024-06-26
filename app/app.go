@@ -726,10 +726,10 @@ func New(
 	)
 	app.TokenFactoryKeeper = &tokenFactoryKeeper
 
-	app.BankKeeper.BaseSendKeeper = app.BankKeeper.BaseSendKeeper.SetHooks(
-		banktypes.NewMultiBankHooks(
-			app.TokenFactoryKeeper.Hooks(),
-		))
+	// app.BankKeeper.BaseSendKeeper = app.BankKeeper.BaseSendKeeper.SetHooks(
+	// 	banktypes.NewMultiBankHooks(
+	// 		app.TokenFactoryKeeper.Hooks(),
+	// 	))
 
 	app.DexKeeper = *dexkeeper.NewKeeper(
 		appCodec,
